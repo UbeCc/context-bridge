@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local deployment / runtime data — never commit live memory or credentials
+config.toml
+config/*.local.toml
+data/
+hub/
+run/
+logs/
+*.log
+scratch/
+.env
+.env.*
+*.secret
+*.token
+.ctxbridge/
+
+# Screenshots/artifacts produced by local test runs
+artifacts/

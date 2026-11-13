@@ -153,7 +153,12 @@ def _snippet_for_record(record: Record, tokens: list[str]) -> str:
 class SearchIndex:
     def __init__(self, hub, use_fts: bool | None = None) -> None:
         self.hub = hub
-        self.path: Path = hub.index_dir / "search.sqlite"
+        # The index is a rebuildable cache. Network filesystems (NFS/JuiceFS) can corrupt SQLite
+        # files under concurrent load, so allow putting it on local storage: an env override is
+        # honoured for the whole cache directory (temp files and lock included).
+        override = os.environ.get("CTXBRIDGE_INDEX_DIR", "").strip()
+        self.index_dir: Path = Path(override).expanduser() if override else hub.index_dir
+        self.path: Path = self.index_dir / "search.sqlite"
         self.use_fts = fts5_supported() if use_fts is None else bool(use_fts)
 
     # -- build ---------------------------------------------------------------------
@@ -165,7 +170,7 @@ class SearchIndex:
         index is removed and the build is retried once. ``force`` is accepted for callers that
         explicitly ask for a fresh index; every rebuild is a full build anyway.
         """
-        index_dir = self.hub.index_dir
+        index_dir = self.index_dir
         index_dir.mkdir(parents=True, exist_ok=True)
         self._cleanup_stale_temps()
         if not self.use_fts:
@@ -193,7 +198,7 @@ class SearchIndex:
                 raise
 
     def _rebuild_once(self) -> int:
-        index_dir = self.hub.index_dir
+        index_dir = self.index_dir
         tmp = index_dir / f".search.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp.sqlite"
         try:
             con = sqlite3.connect(str(tmp))
@@ -381,7 +386,7 @@ class SearchIndex:
         """Remove temp databases left behind by a crashed or killed build."""
         cutoff = time.time() - _STALE_TMP_SECONDS
         try:
-            entries = list(self.hub.index_dir.glob(".search.*.tmp.sqlite*"))
+            entries = list(self.index_dir.glob(".search.*.tmp.sqlite*"))
         except OSError:
             return
         for path in entries:

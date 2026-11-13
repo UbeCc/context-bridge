@@ -24,3 +24,9 @@ scratch/
 
 # Screenshots/artifacts produced by local test runs
 artifacts/
+
+# Deployment secrets / generated demo data
+deploy.env
+deploy.env.*
+!deploy.env.example
+/demo-hub/

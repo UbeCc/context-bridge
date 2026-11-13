@@ -325,8 +325,29 @@
       .replace(/\b(true|false|null)\b/g, '<span class="j-bool">$1</span>');
   }
 
+  // SQLite FTS tokenizes CJK one character at a time and joins the tokens with spaces, so a
+  // server snippet can look like "把 <b>网</b> <b>关</b> 仓 库". Collapse whitespace between two
+  // CJK codepoints (keeping any <b> markers intact) before escaping and highlighting.
+  function tidyCjkSnippet(snippet) {
+    let value = String(snippet == null ? '' : snippet);
+    const CJK = '[\u2e80-\u2eff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]';
+    const punct = '[\u3000-\u303f\uff00-\uffef]';
+    const gapWithTags = new RegExp(`(${CJK})((?:\\s|</?b>)+)(?=${CJK}|${punct})`, 'g');
+    const tagGap = new RegExp(`((?:</?b>)+)((?:\\s|</?b>)+)(?=${CJK}|${punct})`, 'g');
+    const punctBefore = new RegExp(`(?:\\s|</?b>)+(</?b>)*\\s+(?=${punct})`, 'g');
+    let previous;
+    do {
+      previous = value;
+      value = value.replace(gapWithTags, (match, left, middle) => left + middle.replace(/\s+/g, ''));
+      value = value.replace(tagGap, (match, left, middle) => left + middle.replace(/\s+/g, ''));
+      value = value.replace(punctBefore, (match, tag) => `${tag || ''}`);
+    } while (value !== previous);
+    value = value.replace(new RegExp(`\\s+(${punct})`, 'g'), '$1');
+    return value;
+  }
+
   function snippetHtml(snippet) {
-    return esc(snippet)
+    return esc(tidyCjkSnippet(snippet))
       .replace(/&lt;b&gt;/g, '<b>')
       .replace(/&lt;\/b&gt;/g, '</b>');
   }
@@ -1544,7 +1565,11 @@
       m.total = 0;
     }
     m.loading = true;
-    results.innerHTML = `<div class="results-loading"><div class="skeleton skeleton-line w-60"></div><div class="skeleton skeleton-line w-90"></div><div class="skeleton skeleton-line w-70"></div></div>`;
+    results.innerHTML = `<div class="results-loading"><div class="skeleton skeleton-line w-60"></div><div class="skeleton skeleton-line w-90"></div><div class="skeleton skeleton-line w-70"></div><p class="loading-hint" id="memory-slow-hint" hidden>正在加载记忆 · 首次读取较大的 hub 可能需要几秒</p></div>`;
+    const slowHintTimer = setTimeout(() => {
+      const hint = document.getElementById('memory-slow-hint');
+      if (hint) hint.hidden = false;
+    }, 1500);
     const params = {};
     if (m.bot) params.bot = m.bot;
     if (m.kind) params.kind = m.kind;
@@ -1604,6 +1629,9 @@
         <div class="state-actions"><button class="btn primary" type="button" data-action="memory-retry">重试</button></div>
       </div>`;
     } finally {
+      clearTimeout(slowHintTimer);
+      const staleHint = document.getElementById('memory-slow-hint');
+      if (staleHint) staleHint.hidden = true;
       if (requestId === m.requestId) m.loading = false;
     }
   }

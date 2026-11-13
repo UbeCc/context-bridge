@@ -18,9 +18,17 @@
 # Services are supervised by tmux sessions (`ctxbridge-sync`, `ctxbridge-serve`):
 # this class of host has no systemd user services. Logs live under <HUB_DIR>/run/.
 #
+# Recovery: if the collector session dies (crash, or a first full export on a slow
+# volume exceeding the hub's internal git timeout, leaving .git/index.lock behind):
+#   ./scripts/deploy.sh sync     # restart ONLY the collector; cleans a stale lock
+#   ./scripts/deploy.sh restart  # restart both services
+# `start`/`sync` remove a stale <hub>/.git/index.lock only when no `git` process is
+# running; `status` reports it.
+#
 # Usage:
 #   deploy.sh [start] [--dry-run] [--force-config]
 #   deploy.sh config [--force-config] [--print]   # write config.toml only, no services
+#   deploy.sh sync                                # restart only the collector session
 #   deploy.sh status | stop | restart | logs [--lines N]
 #
 # Exit codes: 0 ok, 1 deployment/health failure, 2 usage error.
@@ -36,7 +44,7 @@ PRINT_CONFIG=0
 LOG_LINES=60
 
 usage() {
-  sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -59,7 +67,7 @@ run() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    start | stop | restart | status | logs | config) ACTION=$1 ;;
+    start | stop | restart | status | logs | config | sync) ACTION=$1 ;;
     --dry-run | -n) DRY_RUN=1 ;;
     --force-config) FORCE_CONFIG=1 ;;
     --print) PRINT_CONFIG=1 ;;
@@ -81,7 +89,7 @@ if [ -z "$DEPLOY_ENV" ]; then
 fi
 
 NEEDS_ENV=0
-case "$ACTION" in start | restart) NEEDS_ENV=1 ;; esac
+case "$ACTION" in start | restart | sync) NEEDS_ENV=1 ;; esac
 
 if [ -n "$DEPLOY_ENV" ] && [ -f "$DEPLOY_ENV" ]; then
   # shellcheck source=/dev/null
@@ -477,6 +485,20 @@ start_session() {
   run tmux new-session -d -s "$name" -c "$REPO_ROOT" "$cmd"
 }
 
+# A killed/timed-out `git add` in the hub leaves <hub>/.git/index.lock behind; every later
+# collector commit then fails with "Unable to create index.lock". Clear it only when no git
+# process is running, otherwise a live git operation could be corrupted.
+clean_stale_git_lock() {
+  local lock="$HUB_DIR/.git/index.lock"
+  [ -f "$lock" ] || return 0
+  if pgrep -x git >/dev/null 2>&1; then
+    warn "a git process is running; leaving $lock alone"
+    return 0
+  fi
+  warn "removing stale hub git lock (no git process running): $lock"
+  run rm -f "$lock"
+}
+
 health_body() {
   if command -v curl >/dev/null 2>&1; then
     curl -fsS --max-time 3 "$HEALTH_URL"
@@ -542,6 +564,13 @@ cmd_status() {
       printf '    %-18s stopped\n' "$name"
     fi
   done
+  if [ -f "$HUB_DIR/.git/index.lock" ]; then
+    if pgrep -x git >/dev/null 2>&1; then
+      printf '    %-18s git operation in progress\n' "hub git"
+    else
+      printf '    %-18s STALE index.lock (no git process; run: %s sync)\n' "hub git" "$SCRIPT_DIR/deploy.sh"
+    fi
+  fi
   printf '\n  health: '
   local body
   if body=$(health_body 2>/dev/null) && [ -n "$body" ]; then
@@ -609,6 +638,7 @@ cmd_start() {
   ensure_package
   write_config
   init_hub
+  clean_stale_git_lock
   install_skill
   write_wrappers
   start_session "$SYNC_SESSION" "$LOG_DIR/sync.sh" "$LOG_DIR/sync.log"
@@ -628,6 +658,26 @@ cmd_start() {
   fi
 }
 
+cmd_sync() {
+  require_cmd tmux
+  [ -f "$LOG_DIR/sync.sh" ] || die "collector wrapper missing: $LOG_DIR/sync.sh (run: $SCRIPT_DIR/deploy.sh start)"
+  clean_stale_git_lock
+  start_session "$SYNC_SESSION" "$LOG_DIR/sync.sh" "$LOG_DIR/sync.log"
+  if is_dry; then
+    printf '[deploy] dry run: collector session untouched\n'
+    return 0
+  fi
+  sleep 2
+  if resolve_session "$SYNC_SESSION"; then
+    log "collector restarted (serve was not touched)"
+    log "follow: tail -f $LOG_DIR/sync.log"
+  else
+    warn "collector session failed to start"
+    tail_log "$LOG_DIR/sync.log"
+    return 1
+  fi
+}
+
 case "$ACTION" in
   start) cmd_start ;;
   stop) cmd_stop ;;
@@ -635,5 +685,6 @@ case "$ACTION" in
   status) cmd_status ;;
   logs) cmd_logs ;;
   config) cmd_config ;;
+  sync) cmd_sync ;;
   *) usage >&2; exit 2 ;;
 esac

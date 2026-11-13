@@ -16,11 +16,14 @@ available at all (some exotic SQLite builds), search degrades to an in-memory li
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import re
 import sqlite3
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -34,6 +37,12 @@ SNIPPET_CLOSE = "</b>"
 _MEANINGFUL = re.compile(r"[0-9A-Za-z_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
 
 _FTS5_SUPPORTED: bool | None = None
+
+#: Serialises rebuilds inside one process: concurrent searches must not build the index twice.
+_BUILD_LOCK = threading.Lock()
+
+#: A temp index file older than this is debris from a crashed build and is safe to remove.
+_STALE_TMP_SECONDS = 600
 
 
 def fts5_supported() -> bool:
@@ -148,14 +157,43 @@ class SearchIndex:
         self.use_fts = fts5_supported() if use_fts is None else bool(use_fts)
 
     # -- build ---------------------------------------------------------------------
-    def rebuild(self) -> int:
-        """Rebuild the index from the hub's records. Returns the number of indexed records."""
+    def rebuild(self, force: bool = False) -> int:
+        """Rebuild the index from the hub's records. Returns the number of indexed records.
+
+        Concurrent calls in this process are serialised and the build self-heals: if SQLite
+        reports a corrupt image (seen on network filesystems after an interrupted build) the
+        index is removed and the build is retried once. ``force`` is accepted for callers that
+        explicitly ask for a fresh index; every rebuild is a full build anyway.
+        """
         index_dir = self.hub.index_dir
         index_dir.mkdir(parents=True, exist_ok=True)
+        self._cleanup_stale_temps()
         if not self.use_fts:
             log.warning("SQLite FTS5 is unavailable; search will use the linear scan fallback")
             return 0
+        with _BUILD_LOCK, self._file_lock(index_dir / ".rebuild.lock"):
+            try:
+                return self._rebuild_once()
+            except sqlite3.DatabaseError as exc:
+                log.warning("index: rebuild hit a corrupt index (%s); rebuilding from scratch", exc)
+                _safe_unlink(self.path)
+                try:
+                    return self._rebuild_once()
+                except sqlite3.DatabaseError as exc2:
+                    log.error("index: rebuild failed after reset: %s; search falls back to a scan", exc2)
+                    _safe_unlink(self.path)
+                    return 0
+            except sqlite3.OperationalError as exc:
+                if "fts5" in str(exc).lower():
+                    global _FTS5_SUPPORTED
+                    _FTS5_SUPPORTED = False
+                    self.use_fts = False
+                    log.warning("SQLite FTS5 is unavailable; search will use the linear scan fallback")
+                    return 0
+                raise
 
+    def _rebuild_once(self) -> int:
+        index_dir = self.hub.index_dir
         tmp = index_dir / f".search.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp.sqlite"
         try:
             con = sqlite3.connect(str(tmp))
@@ -185,15 +223,6 @@ class SearchIndex:
                 con.close()
             os.replace(tmp, self.path)
             return count
-        except sqlite3.OperationalError as exc:
-            _safe_unlink(tmp)
-            if "fts5" in str(exc).lower():
-                global _FTS5_SUPPORTED
-                _FTS5_SUPPORTED = False
-                self.use_fts = False
-                log.warning("SQLite FTS5 is unavailable; search will use the linear scan fallback")
-                return 0
-            raise
         except BaseException:
             _safe_unlink(tmp)
             raise
@@ -343,6 +372,55 @@ class SearchIndex:
                 }
             )
         return hits
+
+    def linear_search(self, query: str, bot: str | None = None, kind: str | None = None, limit: int = 30) -> list[dict]:
+        """Public linear-scan fallback used when the FTS index cannot be used."""
+        return self._linear_search(query, bot=bot, kind=kind, limit=limit)
+
+    def _cleanup_stale_temps(self) -> None:
+        """Remove temp databases left behind by a crashed or killed build."""
+        cutoff = time.time() - _STALE_TMP_SECONDS
+        try:
+            entries = list(self.hub.index_dir.glob(".search.*.tmp.sqlite*"))
+        except OSError:
+            return
+        for path in entries:
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                continue
+
+    @contextlib.contextmanager
+    def _file_lock(self, path: Path):
+        """Best-effort cross-process lock around a rebuild (server and CLI can race)."""
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - non-POSIX
+            yield
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(path, "a+")
+        except OSError:
+            yield
+            return
+        try:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                yield
+                return
+            yield
+        finally:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                handle.close()
+            except OSError:
+                pass
 
     # -- staleness -----------------------------------------------------------------
     def is_stale(self) -> bool:

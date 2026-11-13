@@ -17,7 +17,7 @@ from context_bridge.config import ConfigError
 from context_bridge.digest import build_and_write_digests, build_digest
 from context_bridge.hub import Hub
 from context_bridge.model import Record
-from context_bridge.sync import run_sync
+from context_bridge.sync import redaction_stats_totals, run_sync
 
 from conftest import make_superagent_db
 
@@ -220,7 +220,9 @@ def test_run_sync_end_to_end(config) -> None:
     assert manifest["v"] == 1
 
     redaction = hub.read_redaction_stats()
-    assert redaction == {"total": 0, "by_rule": {}}
+    assert redaction["total"] == 0
+    assert redaction["by_rule"] == {}
+    assert redaction["first_synced_at"] and redaction["last_synced_at"]
 
     today = datetime.now(timezone.utc).date().isoformat()
     digest = hub.read_digest("alpha", today)
@@ -254,3 +256,98 @@ def test_run_sync_filtered_bot(config) -> None:
     assert "alpha" in hub.read_cursors()["superagent"]
     # The manifest registry always covers every configured bot, not just the selected one.
     assert set(hub.read_manifest()["bots"]) == {"alpha", "beta"}
+
+
+# -- cumulative redaction stats -----------------------------------------------------------
+
+
+def openai_key() -> str:
+    return "s" + "k-" + "proj-" + "Zx9" * 11
+
+
+def aws_key() -> str:
+    return "AK" + "IA" + "A1B2C3D4E5F6G7H8"
+
+
+def _write_ticket_title(config, title: str, updated_at: str) -> None:
+    """(Re)create alpha's state DB with a single ticket whose title is ``title``."""
+    state_a = Path(config.bots["alpha"].state_dir)
+    db = state_a / "orchestrator.sqlite"
+    if db.exists():
+        db.unlink()
+    ticket = {
+        "id": "a" * 32,
+        "title": title,
+        "decisionId": "d" * 32,
+        "mandate": {"strength": "explicit", "scope": title},
+        "channels": [],
+        "assignments": [],
+        "inputs": [],
+        "undelivered": [],
+        "origin": {"triggerId": "t" * 32},
+        "execution": {"name": "work-a"},
+        "createdAt": f"{DAY}T08:00:00.000Z",
+        "updatedAt": updated_at,
+    }
+    make_superagent_db(db, {"ticket": [{"id": ticket["id"], "value": ticket}]})
+
+
+def test_redaction_stats_accumulate_across_incremental_syncs(config) -> None:
+    hub = Hub(config)
+    _write_ticket_title(config, f"deploy with {openai_key()}", f"{DAY}T10:00:00.000Z")
+    first = run_sync(config, with_sessions=False)
+    assert first["records"] == 1
+
+    stats_one = hub.read_redaction_stats()
+    assert stats_one["total"] >= 1
+    assert stats_one["total"] == sum(stats_one["by_rule"].values())
+    assert "openai_key" in stats_one["by_rule"]
+    assert stats_one["first_synced_at"] == stats_one["last_synced_at"]
+
+    # An incremental pass that masks nothing must NOT reset the running total (the dashboard bug).
+    second = run_sync(config, with_sessions=False)
+    assert second["records"] == 0
+    stats_two = hub.read_redaction_stats()
+    assert stats_two["total"] == stats_one["total"]
+    assert stats_two["by_rule"] == stats_one["by_rule"]
+    assert stats_two["first_synced_at"] == stats_one["first_synced_at"]
+    assert stats_two["last_synced_at"] >= stats_one["last_synced_at"]
+
+    # A later change adds to the total and never lowers a per-rule counter.
+    _write_ticket_title(config, f"deploy with {aws_key()}", f"{DAY}T12:00:00.000Z")
+    third = run_sync(config, with_sessions=False)
+    assert third["records"] == 1
+    stats_three = hub.read_redaction_stats()
+    assert stats_three["total"] > stats_two["total"]
+    assert stats_three["total"] == sum(stats_three["by_rule"].values())
+    for rule, count in stats_two["by_rule"].items():
+        assert stats_three["by_rule"][rule] >= count
+    assert "aws_access_key" in stats_three["by_rule"]
+    assert stats_three["first_synced_at"] == stats_one["first_synced_at"]
+
+    # Shape stays compatible with what /api/health and `ctxbridge status` expect.
+    assert isinstance(stats_three["total"], int)
+    assert isinstance(stats_three["by_rule"], dict)
+    status = Hub(config).status()
+    assert isinstance(status, dict) and "records" in status
+
+
+def test_redaction_stats_totals_helper() -> None:
+    first = redaction_stats_totals({}, {"total": 2, "by_rule": {"internal_domain": 2}}, "2026-11-13T10:00:00.000Z")
+    assert first == {
+        "total": 2,
+        "by_rule": {"internal_domain": 2},
+        "first_synced_at": "2026-11-13T10:00:00.000Z",
+        "last_synced_at": "2026-11-13T10:00:00.000Z",
+    }
+    second = redaction_stats_totals(first, {"total": 0, "by_rule": {}}, "2026-11-13T10:01:00.000Z")
+    assert second["total"] == 2
+    assert second["by_rule"] == {"internal_domain": 2}
+    assert second["first_synced_at"] == first["first_synced_at"]
+    third = redaction_stats_totals(
+        second, {"total": 3, "by_rule": {"home_path": 3}}, "2026-11-13T10:02:00.000Z"
+    )
+    assert third["total"] == 5
+    assert third["by_rule"] == {"home_path": 3, "internal_domain": 2}
+    # Defensive: a corrupt/legacy counter file must not crash a sync.
+    assert redaction_stats_totals({"total": "junk", "by_rule": "junk"}, None, "t")["total"] == 0

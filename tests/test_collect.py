@@ -474,7 +474,7 @@ def test_sessions_digest_and_attribution(tmp_path: Path) -> None:
     assert alpha.payload["turns"] == 1
     assert alpha.payload["model"]["model"] == "test-model"
     assert alpha.payload["ended_reason"] == "completed"
-    assert alpha.source["path"] == "<sessions-root>/--state-a--/s1/session.v4.jsonl.zstd"
+    assert alpha.source["path"] == "<sessions-root>/<session-dir>/session.v4.jsonl.zstd"
     assert alpha.payload["cwd"] == "<bot-state>/work/ticket-1"
     # No absolute host path may leak from session provenance into the hub.
     import json as _json

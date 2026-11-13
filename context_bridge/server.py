@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import queue
+import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -1021,8 +1022,19 @@ class _Handler(BaseHTTPRequestHandler):
         kind = _text_arg(query, "kind") or None
         limit = _int_arg(query, "limit", 30, 1, 200)
         # SearchIndex.search() rebuilds a missing/stale index and falls back to a linear scan
-        # when FTS5 is unavailable, so the server only has to sanitise the result.
-        hits = SearchIndex(server.hub).search(q, bot=bot, kind=kind, limit=limit)
+        # when FTS5 is unavailable. On a corrupt/locked index (seen on network filesystems) we
+        # reset the cache once, then degrade to the linear scan instead of failing the request.
+        index = SearchIndex(server.hub)
+        try:
+            hits = index.search(q, bot=bot, kind=kind, limit=limit)
+        except (sqlite3.DatabaseError, sqlite3.OperationalError, OSError) as exc:
+            log.warning("search: fts index unusable (%s); resetting once", exc)
+            try:
+                index.rebuild(force=True)
+                hits = index.search(q, bot=bot, kind=kind, limit=limit)
+            except (sqlite3.DatabaseError, sqlite3.OperationalError, OSError) as exc2:
+                log.warning("search: fts reset failed (%s); using linear scan", exc2)
+                hits = index.linear_search(q, bot=bot, kind=kind, limit=limit)
         items = []
         for hit in hits:
             record = hit.get("record")

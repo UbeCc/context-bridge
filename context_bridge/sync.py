@@ -61,6 +61,43 @@ def _bot_registry(config: Any) -> dict[str, dict[str, Any]]:
     return registry
 
 
+def redaction_stats_totals(previous: Any, current: Any, at: str) -> dict:
+    """Merge one collector pass's mask counters into the hub's cumulative counter file.
+
+    ``state/redaction.json`` is a *running total*: the sync loop runs every minute and an
+    incremental pass usually masks nothing, which must not make the dashboard's "masked" number
+    collapse back to zero. The dict shape stays compatible with ``/api/health`` (``total`` plus
+    ``by_rule``); ``first_synced_at``/``last_synced_at`` are additive metadata.
+    """
+    merged: Counter[str] = Counter()
+
+    def _add(stats: Any) -> None:
+        if not isinstance(stats, dict):
+            return
+        rules = stats.get("by_rule")
+        if not isinstance(rules, dict):
+            return
+        for rule, count in rules.items():
+            try:
+                value = int(count)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                merged[str(rule)] += value
+
+    _add(previous)
+    _add(current)
+    first = ""
+    if isinstance(previous, dict):
+        first = str(previous.get("first_synced_at") or previous.get("first_sync_at") or "")
+    return {
+        "total": int(sum(merged.values())),
+        "by_rule": dict(sorted(merged.items())),
+        "first_synced_at": first or at,
+        "last_synced_at": at,
+    }
+
+
 def run_sync(config: Any, bots: Any = None, with_sessions: bool = True, commit: bool = True) -> dict:
     """Run one incremental collector pass, write the hub, digests, cursors and stats."""
     selected = _selected_config(config, bots)
@@ -114,7 +151,10 @@ def run_sync(config: Any, bots: Any = None, with_sessions: bool = True, commit: 
             },
         }
     )
-    hub.write_redaction_stats(redactor.stats())
+    # Cumulative, not per-pass: an incremental pass that masks nothing keeps the running total.
+    with hub.lock():
+        previous_stats = hub.read_redaction_stats()
+        hub.write_redaction_stats(redaction_stats_totals(previous_stats, redactor.stats(), at))
 
     try:
         digest_module.build_and_write_digests(hub, selected.bots)
@@ -164,4 +204,4 @@ def sync_loop(config: Any, interval: int = 60, bots: Any = None) -> None:
         LOG.info("sync loop stopped")
 
 
-__all__ = ["run_sync", "sync_loop"]
+__all__ = ["redaction_stats_totals", "run_sync", "sync_loop"]

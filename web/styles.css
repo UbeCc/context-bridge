@@ -3780,6 +3780,13 @@ pre.json {
   padding: 8px 0;
 }
 
+.loading-hint {
+  margin-top: 12px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  animation: fadeUp 0.3s var(--ease) both;
+}
+
 .view-loading {
   padding-top: 6px;
 }

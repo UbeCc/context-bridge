@@ -64,7 +64,7 @@ _OUTCOME_MAX = 1500
 _DIGEST_TOOL_NAMES = 10
 
 #: Bump to re-digest every transcript (e.g. after changing record source/provenance shaping).
-CURSOR_VERSION = 2
+CURSOR_VERSION = 3
 
 
 class ZstdMissingError(RuntimeError):
@@ -270,12 +270,13 @@ def _generic_bot_path(cwd: Any, state_dir: str) -> str | None:
 
 
 def _generic_source_path(path: Path, sessions_root: Path) -> str:
-    """``<sessions-root>/--slug--/<session-id>/session.v4.jsonl.zstd`` (relative, no host path)."""
-    try:
-        relative = path.relative_to(sessions_root)
-    except ValueError:
-        relative = Path(path.name)
-    return "<sessions-root>/" + relative.as_posix()
+    """Generic provenance marker: the cwd slug encodes the host's internal directory layout,
+    so only the shape is kept (``<sessions-root>/<session-dir>/<session-file>``)."""
+    name = path.name
+    session_dir = path.parent.name if path.parent != path else "<session>"
+    if not session_dir or session_dir.startswith("--"):
+        session_dir = "<session-dir>"
+    return f"<sessions-root>/<session-dir>/{name}"
 
 
 def _session_record(

@@ -42,7 +42,12 @@ from typing import Any, Iterable, Iterator
 from . import SCHEMA_VERSION
 from .model import BOARD_COLUMNS, Command, Record, normalize_id, record_relpath, utcnow_iso
 
-GIT_TIMEOUT_S = 120.0
+#: Default git command timeout. The very first `git add -A` of a fresh hub on a network
+#: filesystem can take many minutes for tens of thousands of files; allow that, and let the
+#: environment override it (``CTXBRIDGE_GIT_TIMEOUT_S``) for slower storage.
+GIT_TIMEOUT_S = float(os.environ.get("CTXBRIDGE_GIT_TIMEOUT_S", "900"))
+#: A git index lock older than this is debris from a killed git process, safe to remove.
+_STALE_LOCK_SECONDS = 300.0
 LOCK_TIMEOUT_ENV = "CTXBRIDGE_LOCK_TIMEOUT"
 DEFAULT_LOCK_TIMEOUT_S = 30.0
 
@@ -514,13 +519,30 @@ class Hub:
         return names.returncode == 0 and bool(names.stdout.strip())
 
     def commit(self, message: str, author: str | None = None) -> bool:
-        """Stage everything and commit if dirty. Returns True when a commit was created."""
+        """Stage everything and commit if dirty. Returns True when a commit was created.
+
+        ``git add`` and ``git commit`` are retried a few times: a long initial commit on a
+        network filesystem can outlive the timeout and leave ``.git/index.lock`` behind, and
+        the 60-second sync loop would otherwise fail every later pass. A lock older than
+        ``_STALE_LOCK_SECONDS`` is treated as debris from a killed git process.
+        """
         if not self._load_config_commit():
             return False
         if not (self.root / ".git").is_dir():
             return False
-        self._git("add", "-A")
-        staged = self._git("diff", "--cached", "--quiet", check=False)
+        staged = None
+        for attempt in range(3):
+            try:
+                self._git("add", "-A")
+                staged = self._git("diff", "--cached", "--quiet", check=False)
+                break
+            except HubError as exc:
+                if attempt == 2 or "index.lock" not in str(exc):
+                    raise
+                self._clear_stale_lock()
+                time.sleep(1.5)
+        if staged is None:
+            raise HubError("git add failed")
         if staged.returncode == 0:
             return False
         if staged.returncode != 1:
@@ -528,17 +550,34 @@ class Hub:
             raise HubError(f"git diff --cached failed: {detail or 'unknown error'}")
         name = (author or "ctxbridge").strip() or "ctxbridge"
         email = f"{_SAFE_AUTHOR.sub('-', name) or 'ctxbridge'}@localhost"
-        self._git(
-            "-c",
-            f"user.name={name}",
-            "-c",
-            f"user.email={email}",
-            "commit",
-            "-q",
-            "-m",
-            message or "hub update",
-        )
-        return True
+        for attempt in range(3):
+            try:
+                self._git(
+                    "-c",
+                    f"user.name={name}",
+                    "-c",
+                    f"user.email={email}",
+                    "commit",
+                    "-q",
+                    "-m",
+                    message or "hub update",
+                )
+                return True
+            except HubError as exc:
+                if attempt == 2 or "index.lock" not in str(exc):
+                    raise
+                self._clear_stale_lock()
+                time.sleep(1.5)
+        return False
+
+    def _clear_stale_lock(self) -> None:
+        """Remove ``.git/index.lock`` only when it is old enough to be debris."""
+        lock = self.root / ".git" / "index.lock"
+        try:
+            if lock.is_file() and time.time() - lock.stat().st_mtime > _STALE_LOCK_SECONDS:
+                lock.unlink()
+        except OSError:
+            return
 
     def pull_rebase(self) -> None:
         """``git pull --rebase`` when a remote is configured; silently a no-op otherwise."""

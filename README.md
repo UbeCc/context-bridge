@@ -376,11 +376,28 @@ files in CI and blocks the build on a leak; `.gitignore` and the deploy script k
 ```bash
 ./scripts/deploy.sh status       # tmux sessions, /api/health, hub counts
 ./scripts/deploy.sh logs --lines 100
-./scripts/deploy.sh restart
+./scripts/deploy.sh sync         # restart ONLY the collector (safe while serving)
+./scripts/deploy.sh restart      # restart both services
+./scripts/deploy.sh stop
 
 ctxbridge --config <path> status --json   # records by bot/kind, last sync, last commit
 ctxbridge --config <path> doctor          # environment checks
 ctxbridge --config <path> index           # rebuild the search index (a cache)
+```
+
+If the collector session dies — crash, an OOM, or the very first full export on a slow network
+filesystem — restart only it with `./scripts/deploy.sh sync`. A killed `git add` can leave
+`<hub>/.git/index.lock` behind; `start`/`sync` clear it when no `git` process is running, and
+`status` reports it as STALE. The first full export writes thousands of new files, so its first
+`git add` can exceed the hub's internal git timeout even though later incremental commits take
+well under a second; if `run/sync.log` shows `git add timed out`, stage and commit the initial
+export once by hand, then `./scripts/deploy.sh sync`:
+
+```bash
+git -C "$HUB_DIR" add -A
+git -C "$HUB_DIR" -c user.name=ctxbridge -c user.email=ctxbridge@localhost \
+  commit -m "sync: initial full export"
+./scripts/deploy.sh sync
 ```
 
 - **Collectors are incremental and idempotent.** Cursors live in `state/cursors.json`; a crash

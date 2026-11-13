@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Context Bridge · 共享上下文中枢</title>
+  <meta name="description" content="多智能体舰队的共享上下文与记忆中枢：舰队概览、每个 bot 的记忆时间线与日报、全文检索、共享看板与指令控制台。">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0b0d12">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c5cff'/%3E%3Cpath d='M8 21c0-4.4 3.6-8 8-8s8 3.6 8 8' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='8' cy='21' r='2.6' fill='white'/%3E%3Ccircle cx='24' cy='21' r='2.6' fill='white'/%3E%3Ccircle cx='16' cy='13' r='2.6' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <svg class="svg-sprite" aria-hidden="true" focusable="false">
+    <defs>
+      <linearGradient id="brand-grad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#8b7cff"/>
+        <stop offset="100%" stop-color="#38d9c0"/>
+      </linearGradient>
+    </defs>
+    <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></symbol>
+    <symbol id="i-bots" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="12" rx="4"/><path d="M12 3v4M9 12h.01M15 12h.01M9.5 16h5"/><path d="M2 11v3M22 11v3"/></symbol>
+    <symbol id="i-memory" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3V6"/><path d="M4.5 12v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-6"/></symbol>
+    <symbol id="i-board" viewBox="0 0 24 24"><rect x="3" y="4" width="5.2" height="16" rx="2"/><rect x="9.4" y="4" width="5.2" height="10" rx="2"/><rect x="15.8" y="4" width="5.2" height="13" rx="2"/></symbol>
+    <symbol id="i-console" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3.5 3L7 15M12.5 15H17"/></symbol>
+    <symbol id="i-about" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.6v.01"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 5v6h-6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m14.5 6-6 6 6 6"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M4 12h16M14 6l6 6-6 6"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M19 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M10 11v5M14 11v5"/></symbol>
+    <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.2"/><circle cx="15" cy="6" r="1.2"/><circle cx="9" cy="12" r="1.2"/><circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="18" r="1.2"/><circle cx="15" cy="18" r="1.2"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.5 21 19H3z"/><path d="M12 9.5v4.5M12 17v.01"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5 14 10l6.5 2-6.5 2-2 6.5-2-6.5L3.5 12 10 10z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M21 3 10.5 13.5M21 3l-6.5 18-4-8.5L2 8.5z"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.5l3.5 2"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 20 6v6c0 4.5-3.2 7.6-8 9-4.8-1.4-8-4.5-8-9V6z"/><path d="m8.5 12 2.4 2.4 4.6-5"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6.5 4 13L16 12h5"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5V5.5M9 7h7M9 11h7"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5M12 14.5v2.5"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10.5V17M12 7.2v.01"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 5h16l-6 7v6l-4 2v-8z"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="m3 12 9-9h7a2 2 0 0 1 2 2v7l-9 9a2 2 0 0 1-2.8 0L3 14.8A2 2 0 0 1 3 12Z"/><circle cx="16.5" cy="7.5" r="1.3"/></symbol>
+    <symbol id="i-hub" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M12 7.5v3M12 10.5 6.6 15.8M12 10.5l5.4 5.3"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v10M8 10l4 4 4-4M5 19h14"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17z"/><path d="m13.5 6.5 3 3"/></symbol>
+  </svg>
+
+  <a class="skip-link" href="#view">跳到主内容</a>
+
+  <div class="app">
+    <aside class="sidebar" id="sidebar" aria-label="侧边导航">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="9" fill="url(#brand-grad)"/><path d="M8 21.5c0-4.4 3.6-8 8-8s8 3.6 8 8" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round"/><circle cx="8" cy="21.5" r="2.5" fill="#fff"/><circle cx="24" cy="21.5" r="2.5" fill="#fff"/><circle cx="16" cy="13.5" r="2.5" fill="#fff"/></svg>
+        </span>
+        <span class="brand-text">
+          <strong>Context Bridge</strong>
+          <small>共享上下文中枢</small>
+        </span>
+        <button class="icon-btn brand-close" type="button" data-action="toggle-nav" aria-label="关闭导航">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
+      </div>
+
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-item" type="button" data-route="overview">
+          <svg class="icon"><use href="#i-overview"/></svg><span>概览</span>
+          <span class="nav-badge" data-attention-badge hidden>0</span>
+        </button>
+        <button class="nav-item" type="button" data-route="bots">
+          <svg class="icon"><use href="#i-bots"/></svg><span>智能体</span>
+        </button>
+        <button class="nav-item" type="button" data-route="memory">
+          <svg class="icon"><use href="#i-memory"/></svg><span>记忆</span>
+        </button>
+        <button class="nav-item" type="button" data-route="board">
+          <svg class="icon"><use href="#i-board"/></svg><span>看板</span>
+        </button>
+        <button class="nav-item" type="button" data-route="console">
+          <svg class="icon"><use href="#i-console"/></svg><span>控制台</span>
+        </button>
+        <button class="nav-item" type="button" data-route="about">
+          <svg class="icon"><use href="#i-about"/></svg><span>关于</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="conn" id="conn-status" data-state="connecting" role="status" aria-live="polite">
+          <span class="conn-dot" aria-hidden="true"></span>
+          <span class="conn-text">连接中…</span>
+        </div>
+        <button class="theme-switch" type="button" data-action="toggle-theme" aria-label="切换明暗主题" title="切换明暗主题（T）">
+          <span class="theme-switch-track" aria-hidden="true"><span class="theme-switch-thumb"></span></span>
+          <span class="theme-switch-text">深色</span>
+        </button>
+        <div class="hub-meta" id="hub-meta">
+          <svg class="icon"><use href="#i-hub"/></svg>
+          <span class="hub-meta-text">—</span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="scrim" id="nav-scrim" data-action="toggle-nav" hidden></div>
+
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn nav-open" type="button" data-action="toggle-nav" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false">
+          <svg class="icon"><use href="#i-menu"/></svg>
+        </button>
+        <div class="page-head">
+          <h1 id="page-title">概览</h1>
+          <p id="page-subtitle">舰队状态与实时动态</p>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-ghost topbar-sync" type="button" data-action="manual-sync" title="触发一次采集同步">
+            <svg class="icon"><use href="#i-refresh"/></svg><span class="btn-label">同步</span>
+          </button>
+          <button class="icon-btn topbar-theme" type="button" data-action="toggle-theme" aria-label="切换明暗主题">
+            <svg class="icon icon-sun"><use href="#i-sun"/></svg>
+            <svg class="icon icon-moon"><use href="#i-moon"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <main id="view" class="view" tabindex="-1" aria-busy="true">
+        <div class="view-loading">
+          <div class="skeleton skeleton-title"></div>
+          <div class="skeleton-grid">
+            <div class="skeleton skeleton-card"></div>
+            <div class="skeleton skeleton-card"></div>
+            <div class="skeleton skeleton-card"></div>
+            <div class="skeleton skeleton-card"></div>
+          </div>
+          <div class="skeleton skeleton-panel"></div>
+        </div>
+      </main>
+
+      <footer class="page-foot">
+        <span>Context Bridge · 记忆先脱敏再落盘</span>
+        <span class="page-foot-sep" aria-hidden="true">·</span>
+        <span>开源演示 · 数据为合成示例</span>
+      </footer>
+    </div>
+  </div>
+
+  <nav class="bottom-nav" aria-label="快捷导航">
+    <button class="bottom-item" type="button" data-route="overview"><svg class="icon"><use href="#i-overview"/></svg><span>概览</span></button>
+    <button class="bottom-item" type="button" data-route="bots"><svg class="icon"><use href="#i-bots"/></svg><span>智能体</span></button>
+    <button class="bottom-item" type="button" data-route="memory"><svg class="icon"><use href="#i-memory"/></svg><span>记忆</span></button>
+    <button class="bottom-item" type="button" data-route="board"><svg class="icon"><use href="#i-board"/></svg><span>看板</span></button>
+    <button class="bottom-item" type="button" data-route="console"><svg class="icon"><use href="#i-console"/></svg><span>控制台</span></button>
+    <button class="bottom-item" type="button" data-route="about"><svg class="icon"><use href="#i-about"/></svg><span>关于</span></button>
+  </nav>
+
+  <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="false"></div>
+  <div id="overlay-root"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

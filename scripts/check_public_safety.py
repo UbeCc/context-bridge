@@ -15,7 +15,8 @@ from pathlib import Path
 # (name, regex) — case-insensitive unless stated. Keep patterns narrow enough to be actionable.
 FORBIDDEN = [
     ("corporate domain", r"glm\.ai|bigmodel\.cn|deepseek\.com/(?!en/harness)"),
-    ("private IP", r"\b(?:10|127|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b"),
+    # Loopback (127.0.0.1 / localhost) is public-safe and allowed. Only real RFC1918 hosts matter.
+    ("private IP", r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b"),
     ("internal hostname", r"\b(?:dev-\d{3,4}|haoran-[a-z0-9-]+|euler-\d+)\b"),
     ("feishu id", r"\b(?:oc|om|ou|omt)_[0-9a-f]{8,}"),
     ("credential shape", r"sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_|AKIA[0-9A-Z]{16}|xox[baprs]-|-----BEGIN [A-Z ]*PRIVATE KEY-----"),

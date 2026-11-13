@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Context Bridge CLI wrapper for hosts where `pip install -e .` was not run or where
+# the entry point in PATH uses the wrong Python interpreter.
+#
+#   ./scripts/ctxbridge search "release checklist" --bot all
+#   ./scripts/ctxbridge recall atlas --days 2
+#   ./scripts/ctxbridge note --bot beacon "found the staging URL in the runbook"
+#
+# Interpreter resolution:
+#   1. $CTXBRIDGE_PY (e.g. from the deployment env file)
+#   2. the repository's own .venv, if present
+#   3. python3 on PATH
+#
+# The repository root is added to PYTHONPATH, so this works with an editable install,
+# a plain checkout, or a release tarball.
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+
+if [ -n "${CTXBRIDGE_PY:-}" ]; then
+  PY=$CTXBRIDGE_PY
+elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+  PY=$REPO_ROOT/.venv/bin/python
+else
+  PY=python3
+fi
+
+exec env PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$PY" -m context_bridge.cli "$@"

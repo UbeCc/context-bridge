@@ -137,7 +137,7 @@ One JSON object per unit of memory. Versioned envelope (`v: 1`).
   "updated_at": "2026-11-13T21:02:00.000Z",
   "tags": ["bridge", "feishu"],
   "refs": {"ticket": "9808e853...", "url": "https://applink.feishu.cn/..."},
-  "source": {"system": "dsh-superagent", "profile": "superagent", "path": "/srv/bots/opus/orchestrator.sqlite", "source_id": "9808e853..."},
+  "source": {"system": "dsh-superagent", "profile": "superagent", "path": "<bot-state>/orchestrator.sqlite", "source_id": "9808e853..."},
   "payload": {"state": "open", "reports": [{"state": "progress", "summary": "..."}]},
   "redactions": 3
 }
@@ -165,7 +165,7 @@ Redaction runs on every string before it reaches the hub. Two layers:
 1. **Never-collect**: the collector only reads structured state and session text. It never reads
    credential files (`.env`, `*.credentials*`, SSH keys, token stores) or repository secrets.
 2. **Mask-at-write** (`redact.py`), default-on rules:
-   - secret shapes: `sk-…`, `ghp_/gho_/github_pat_…`, `AKIA…`, `xox[baprs]-…`, JWTs, PEM private
+   - secret shapes: provider API-key prefixes, GitHub token prefixes, AWS access-key ids, Slack token prefixes, JWTs, PEM private
      keys, `Bearer …`, password/api-key/secret/token assignments, `user:pass@` URLs;
    - internal endpoints: private IP ranges, corporate domains (blocklist in `scripts/check_public_safety.py`), loopback URLs
      with ports, internal hostnames;

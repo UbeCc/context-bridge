@@ -30,9 +30,18 @@ The server is same-origin: it serves the console and the API from one port, no C
 ```json
 {"items": [BotSummary]}
 ```
+`BotSummary` = `{id, label, profile, color, emoji, status, last_sync, counts, open_tickets, attention}`
+(`counts` maps record kind → number; `emoji` is the bot's configured glyph).
+
 ### `GET /api/bots/{id}`
 ```json
-{"bot": BotSummary, "recent": [RecordBrief], "digests": [{"date": "2026-11-13", "path": "digests/opus/2026-11-13.md"}]}
+{"bot": BotSummary, "recent": [RecordBrief],
+ "digests": [{"date": "2026-11-13", "path": "digests/opus/2026-11-13.md"}]}
+```
+### `GET /api/digests/{bot}/{date}`
+Markdown daily digest of one bot (`date` = `YYYY-MM-DD`). `404` if the digest does not exist.
+```json
+{"bot": "opus", "date": "2026-11-13", "content": "# Opus · 2026-11-13\n\n- …"}
 ```
 ### `GET /api/records?bot=&kind=&q=&limit=50&offset=0`
 ```json

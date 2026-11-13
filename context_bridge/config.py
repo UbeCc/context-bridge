@@ -187,24 +187,24 @@ mask_private_ips = true
 [bots.opus]
 label = "Opus"
 profile = "superagent"
-state_dir = "/srv/bots/opus/state"
-sessions_root = "/srv/dsh/sessions"
+state_dir = "~/bots/opus/state"
+sessions_root = "~/.dsh/sessions"
 color = "#7c5cff"
 emoji = "🟣"
 
 [bots.sonnet]
 label = "Sonnet"
 profile = "superagent-sonnet"
-state_dir = "/srv/bots/sonnet/state"
-sessions_root = "/srv/dsh/sessions"
+state_dir = "~/bots/sonnet/state"
+sessions_root = "~/.dsh/sessions"
 color = "#2fc8b5"
 emoji = "🩵"
 
 [bots.fable]
 label = "Fable"
 profile = "superagent-fable"
-state_dir = "/srv/bots/fable/state"
-sessions_root = "/srv/dsh/sessions"
+state_dir = "~/bots/fable/state"
+sessions_root = "~/.dsh/sessions"
 color = "#f0a13b"
 emoji = "🟠"
 """

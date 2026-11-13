@@ -10,11 +10,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
+import uuid
 from pathlib import Path
 
 from . import __version__
+from .board import Board
 from .config import ConfigError, config_template, load_config
+from .hub import Hub, HubError
+from .index import SearchIndex, fts5_supported
+from .model import Record, record_relpath, utcnow_iso
+from .redact import Redactor
+
+
+class CLIError(RuntimeError):
+    """A user-facing CLI failure (not a bug): printed without a traceback, exit code 1."""
 
 
 def _config_path(args) -> str:
@@ -33,6 +44,15 @@ def _load(args):
     return load_config(_config_path(args))
 
 
+def _hub(config, *, must_exist: bool = True) -> Hub:
+    hub = Hub(config)
+    if must_exist and not hub.manifest_file.is_file():
+        raise CLIError(
+            f"hub is not initialized: {hub.root} (run `ctxbridge init --dir {hub.root}`)"
+        )
+    return hub
+
+
 def _print(data, as_json: bool = False) -> None:
     if as_json:
         print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
@@ -40,24 +60,53 @@ def _print(data, as_json: bool = False) -> None:
     print(data if isinstance(data, str) else json.dumps(data, ensure_ascii=False, default=str))
 
 
+def _first_line(text: str, limit: int = 120) -> str:
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line:
+            return line[:limit]
+    return ""
+
+
+def _iso_before(days: int) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    moment = datetime.now(timezone.utc) - timedelta(days=max(0, int(days)))
+    return moment.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _resolve_binary(value: str | None) -> str | None:
+    if not value:
+        return None
+    candidate = Path(str(value)).expanduser()
+    if candidate.is_file():
+        return str(candidate)
+    return shutil.which(str(value))
+
+
 # ---------------------------------------------------------------------------------------------
 # commands
 # ---------------------------------------------------------------------------------------------
 def cmd_init(args) -> int:
-    from .hub import Hub
-
     target = Path(args.dir).expanduser()
-    target.mkdir(parents=True, exist_ok=True)
-    if (target / "manifest.json").exists() and not args.force:
+    already = (target / "manifest.json").exists()
+    if already and not args.force:
         print(f"hub already initialized: {target}", file=sys.stderr)
         return 1
+    target.mkdir(parents=True, exist_ok=True)
     hub = Hub(None, root=target)  # type: ignore[arg-type]
     hub.ensure()
+    written = False
     cfg = target / "config.toml"
     if not cfg.exists():
-        cfg.write_text(config_template(str(target), 8080), encoding="utf-8")
-        print(f"wrote starter config: {cfg}")
+        cfg.write_text(config_template(str(target), args.port), encoding="utf-8")
+        written = True
+    committed = hub.commit("hub: initialize", author="ctxbridge")
     print(f"hub initialized: {target}")
+    if written:
+        print(f"wrote starter config: {cfg}")
+    if committed:
+        print("created initial git commit")
     return 0
 
 
@@ -71,42 +120,55 @@ def cmd_sync(args) -> int:
 
     config = _load(args)
     bots = [args.bot] if args.bot else None
+    hub = Hub(config)
+    hub.ensure()
     if args.loop:
         sync_loop(config, args.loop, bots=bots)
         return 0
-    result = run_sync(config, bots=bots, with_sessions=not args.no_sessions, commit=not args.no_commit)
-    _print(result, args.json)
+    result = run_sync(
+        config, bots=bots, with_sessions=not args.no_sessions, commit=not args.no_commit
+    )
+    indexed = SearchIndex(hub).rebuild()
+    payload = dict(result) if isinstance(result, dict) else {"result": result}
+    payload["indexed"] = indexed
+    _print(payload, args.json)
     return 0
 
 
 def cmd_index(args) -> int:
-    from .hub import Hub
-    from .index import SearchIndex
-
     config = _load(args)
-    idx = SearchIndex(Hub(config))
-    n = idx.rebuild()
-    _print({"indexed": n}, args.json)
+    hub = _hub(config)
+    indexed = SearchIndex(hub).rebuild()
+    _print({"indexed": indexed}, args.json)
     return 0
 
 
 def cmd_search(args) -> int:
-    from .hub import Hub
-    from .index import SearchIndex
-
     config = _load(args)
-    idx = SearchIndex(Hub(config))
+    hub = _hub(config)
     bot = None if args.bot in (None, "all", "*") else args.bot
-    hits = idx.search(args.query, bot=bot, kind=args.kind, limit=args.limit)
+    if bot:
+        config.bot(bot)  # validate against the configured fleet
+    hits = SearchIndex(hub).search(args.query, bot=bot, kind=args.kind, limit=args.limit)
     if args.json:
-        _print([{"record": h["record"].brief(), "snippet": h.get("snippet", "")} for h in hits], True)
+        _print(
+            [
+                {
+                    "record": hit["record"].brief(),
+                    "snippet": hit.get("snippet", ""),
+                    "score": hit.get("score", 1.0),
+                }
+                for hit in hits
+            ],
+            True,
+        )
         return 0
     if not hits:
         print("(no matches)")
         return 0
     for hit in hits:
-        r = hit["record"]
-        print(f"[{r.bot}/{r.kind}] {r.title}  ({r.updated_at[:19]})")
+        record = hit["record"]
+        print(f"[{record.bot}/{record.kind}] {record.title}  ({record.updated_at[:19]})")
         snippet = " ".join((hit.get("snippet") or "").split())
         if snippet:
             print(f"    {snippet[:300]}")
@@ -114,70 +176,98 @@ def cmd_search(args) -> int:
 
 
 def cmd_recall(args) -> int:
-    from datetime import datetime, timedelta, timezone
-
-    from .hub import Hub
-
     config = _load(args)
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=args.days)).strftime("%Y-%m-%dT%H:%M:%S")
+    hub = _hub(config)
+    bot = None if args.bot in ("all", "*") else args.bot
+    if bot:
+        config.bot(bot)
+    cutoff = _iso_before(args.days)
     records = [
-        r
-        for r in Hub(config).iter_records(bot=args.bot, kind=args.kind)
-        if (r.updated_at or r.created_at) >= cutoff
+        record
+        for record in hub.iter_records(bot=bot, kind=args.kind)
+        if (record.updated_at or record.created_at or "")[:19] >= cutoff
     ]
-    records.sort(key=lambda r: r.updated_at or r.created_at, reverse=True)
+    records.sort(key=lambda record: record.updated_at or record.created_at, reverse=True)
     records = records[: args.limit]
     if args.json:
-        _print([r.brief() for r in records], True)
+        _print([record.brief() for record in records], True)
         return 0
     if not records:
         print("(nothing in range)")
         return 0
-    for r in records:
-        print(f"[{r.kind}] {r.title}  ({r.updated_at[:19]})")
-        if r.summary:
-            print("    " + " ".join(r.summary.split())[:300])
+    for record in records:
+        print(f"[{record.bot}/{record.kind}] {record.title}  ({record.updated_at[:19]})")
+        if record.summary:
+            print("    " + " ".join(record.summary.split())[:300])
     return 0
 
 
 def cmd_note(args) -> int:
-    from .hub import Hub
-    from .model import Record, utcnow_iso
-
     config = _load(args)
-    hub = Hub(config)
+    hub = _hub(config)
+    bot = config.bot(args.bot).id
+    redactor = Redactor(config)
+
+    cleaned = redactor.clean(args.text)
+    redactions = int(cleaned.count or 0)
+    text = cleaned.text
+    if not text.strip():
+        raise CLIError("note text is empty after redaction")
+    if args.title:
+        title_result = redactor.clean(args.title)
+        redactions += int(title_result.count or 0)
+        title = _first_line(title_result.text.strip())
+    else:
+        title = _first_line(text)
+    tags: list[str] = []
+    for tag in args.tag or []:
+        tag_result = redactor.clean(tag)
+        redactions += int(tag_result.count or 0)
+        cleaned_tag = tag_result.text.strip()
+        if cleaned_tag:
+            tags.append(cleaned_tag)
+
+    stamp = utcnow_iso().replace("-", "").replace(":", "").replace(".", "")
     record = Record(
-        bot=args.bot,
+        bot=bot,
         kind="note",
-        title=args.text.splitlines()[0][:120],
-        summary=args.text,
-        tags=args.tag or [],
-        source={"system": "ctxbridge", "source_id": utcnow_iso()},
-        payload={"author": args.bot},
+        title=title or "note",
+        summary=text,
+        tags=tags,
+        source={"system": "ctxbridge", "source_id": f"{stamp}-{uuid.uuid4().hex[:8]}"},
+        payload={"author": bot},
+        redactions=redactions,
     )
     hub.write_records([record])
-    hub.commit(f"[{args.bot}] note: {record.title[:80]}")
-    _print({"id": record.id, "path": f"records/{record.bot}/note/{record.id}.json"}, args.json)
+    hub.commit(f"[{bot}] note: {record.title[:80]}", author=bot)
+    _print(
+        {
+            "id": record.id,
+            "bot": bot,
+            "path": record_relpath(record),
+            "title": record.title,
+            "redactions": redactions,
+        },
+        args.json,
+    )
     return 0
 
 
 def cmd_board(args) -> int:
-    from .hub import Hub
-    from .board import Board
-
     config = _load(args)
-    board = Board(Hub(config))
+    hub = _hub(config)
+    board = Board(hub)
     if args.action == "list":
         data = board.load()
         if args.json:
             _print({"columns": data["columns"], "cards": [c.to_dict() for c in data["cards"]]}, True)
             return 0
-        for col in data["columns"]:
-            cards = [c for c in data["cards"] if c.column == col["id"]]
-            print(f"== {col['title']} ({len(cards)})")
-            for c in cards:
-                who = f" @{c.assignee}" if c.assignee else ""
-                print(f"  - {c.id}  {c.title}{who}")
+        for column in data["columns"]:
+            cards = [card for card in data["cards"] if card.column == column["id"]]
+            print(f"== {column['title']} ({len(cards)})")
+            for card in cards:
+                who = f" @{card.assignee}" if card.assignee else ""
+                print(f"  - {card.id}  {card.title}{who}")
         return 0
     if args.action == "add":
         card = board.add_card(
@@ -199,10 +289,10 @@ def cmd_board(args) -> int:
         _print(card.to_dict(), args.json)
         return 0
     if args.action == "remove":
-        ok = board.delete_card(args.card_id)
-        _print({"ok": ok}, args.json)
-        return 0 if ok else 1
-    raise SystemExit(f"unknown board action: {args.action}")
+        removed = board.delete_card(args.card_id)
+        _print({"ok": removed}, args.json)
+        return 0 if removed else 1
+    raise CLIError(f"unknown board action: {args.action}")
 
 
 def cmd_serve(args) -> int:
@@ -218,8 +308,6 @@ def cmd_serve(args) -> int:
 
 
 def cmd_status(args) -> int:
-    from .hub import Hub
-
     config = _load(args)
     data = Hub(config).status()
     data["version"] = __version__
@@ -228,35 +316,62 @@ def cmd_status(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    import shutil
     import sqlite3
-
-    from .hub import Hub
 
     checks: list[dict] = []
 
-    def check(name: str, ok: bool, detail: str = "") -> None:
-        checks.append({"check": name, "ok": ok, "detail": detail})
+    def check(name: str, ok: bool, detail: str = "", required: bool = True) -> None:
+        checks.append({"check": name, "ok": bool(ok), "detail": detail, "required": required})
 
+    check("python>=3.11", sys.version_info >= (3, 11), sys.version.split()[0] + " " + sys.executable)
+    version = sqlite3.sqlite_version_info
+    check(
+        "python-sqlite>=3.38",
+        version >= (3, 38),
+        f"{sqlite3.sqlite_version} (superagent collectors need >=3.38)",
+    )
+    check("sqlite-fts5", fts5_supported(), "full-text search support")
+
+    git = shutil.which("git")
+    check("git", bool(git), git or "missing")
+
+    zstd = _resolve_binary(os.environ.get("CTXBRIDGE_ZSTD")) or _resolve_binary("zstd")
+    check("zstd", bool(zstd), zstd or "missing (session digests disabled)", required=False)
+
+    config = None
     try:
         config = _load(args)
         check("config", True, str(config.path))
-        hub = Hub(config)
-        check("hub", hub.root.is_dir(), str(hub.root))
-        for bot_id, spec in config.bots.items():
-            check(f"bot:{bot_id}:state_dir", Path(spec.state_dir).is_dir(), spec.state_dir)
     except ConfigError as exc:
         check("config", False, str(exc))
-        config = None
 
-    v = sqlite3.sqlite_version_info
-    check("python-sqlite>=3.38", v >= (3, 38), sqlite3.sqlite_version)
-    check("zstd", bool(shutil.which("zstd")), shutil.which("zstd") or "missing (session digests disabled)")
-    check("git", bool(shutil.which("git")), shutil.which("git") or "missing")
-    if config is not None and config.feishu.enabled:
-        check("lark-cli", bool(shutil.which(config.feishu.cli)), config.feishu.cli)
+    if config is not None:
+        hub = Hub(config)
+        check("hub-dir", hub.root.is_dir(), str(hub.root))
+        check(
+            "hub-initialized",
+            hub.manifest_file.is_file(),
+            f"{hub.manifest_file} (run `ctxbridge init --dir {hub.root}`)",
+        )
+        if hub.root.is_dir():
+            check("hub-writable", os.access(hub.root, os.W_OK), str(hub.root))
+        for bot_id, spec in config.bots.items():
+            state_dir = Path(spec.state_dir)
+            check(f"bot:{bot_id}:state_dir", state_dir.is_dir(), spec.state_dir)
+            check(
+                f"bot:{bot_id}:orchestrator.sqlite",
+                (state_dir / "orchestrator.sqlite").is_file(),
+                str(state_dir / "orchestrator.sqlite"),
+                required=False,
+            )
+        check(
+            "chat-relay",
+            not config.feishu.enabled or bool(_resolve_binary(config.feishu.cli)),
+            "enabled" if config.feishu.enabled else "disabled in config (commands are recorded, not sent)",
+            required=bool(config.feishu.enabled),
+        )
 
-    ok = all(c["ok"] for c in checks)
+    ok = all(item["ok"] for item in checks if item["required"])
     _print({"ok": ok, "checks": checks}, args.json)
     return 0 if ok else 1
 
@@ -269,6 +384,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("init", help="create a new hub repository")
     p.add_argument("--dir", default="./hub")
+    p.add_argument("--port", type=int, default=8080, help="port written into the starter config")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_init)
 
@@ -308,6 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("note", help="write a memory note for other bots")
     p.add_argument("text")
     p.add_argument("--bot", required=True)
+    p.add_argument("--title")
     p.add_argument("--tag", action="append")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_note)
@@ -360,6 +477,25 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
+    except CLIError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except HubError as exc:
+        print(f"hub error: {exc}", file=sys.stderr)
+        return 1
+    except KeyError as exc:
+        missing = exc.args[0] if exc.args else exc
+        print(f"not found: {missing}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except NotImplementedError as exc:
+        print(f"error: not implemented yet: {exc}", file=sys.stderr)
+        return 3
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         return 130

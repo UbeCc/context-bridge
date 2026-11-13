@@ -87,6 +87,11 @@ _INTERNAL_HOST = re.compile(
     r"(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"(?:internal|intranet|local|lan|corp|home\.arpa)\b"
 )
+#: Absolute user-home paths are host details, not shared memory. Both the plain form and the
+#: common ``NO_PROXY=.host`` / trailing-punctuation forms are covered.
+_HOME_PATH = re.compile(
+    r"(?<![A-Za-z0-9_.-])/(?:root|home/[A-Za-z0-9_.-]+)(?:/[^\s\"'`)\]}>,;]*)?"
+)
 
 #: Candidate for the generic high-entropy secret rule: base64/url-ish tokens with no whitespace.
 _ENTROPY_CANDIDATE = re.compile(r"[A-Za-z0-9+/_=-]{40,}")
@@ -233,12 +238,15 @@ class Redactor:
         if self.mask_private_ips:
             rules.append(_Rule("private_ip", [_PRIVATE_IP], _repl_mask))
         for domain in self.internal_domains:
-            # Mask the configured domain and any sub-domains of it, case-insensitively.
+            # Mask the configured domain, its sub-domains and dot-prefixed forms (".host" shows
+            # up in NO_PROXY lists and shell env dumps). Only word characters/hyphens block a
+            # match: a leading "." is part of the endpoint, not a boundary.
             pattern = re.compile(
-                r"(?i)(?<![\w.-])(?:[\w-]+\.)*" + re.escape(domain) + r"(?![\w.-])"
+                r"(?i)(?<![A-Za-z0-9-])\.?(?:[\w-]+\.)*" + re.escape(domain) + r"(?![\w-])"
             )
             rules.append(_Rule("internal_domain", [pattern], _repl_mask))
         rules.append(_Rule("internal_host", [_INTERNAL_HOST], _repl_mask))
+        rules.append(_Rule("home_path", [_HOME_PATH], _repl_mask))
         for raw in self.extra_patterns:
             try:
                 pattern = re.compile(raw)

@@ -1934,6 +1934,9 @@
         </div>
         <p class="console-result-text">${esc(truncate(result.text || '', 240))}</p>
         ${result.message_id ? `<p class="console-result-meta">消息 ID <code>${esc(result.message_id)}</code></p>` : ''}
+        ${result.status === 'skipped'
+          ? `<p class="console-result-meta"><svg class="icon"><use href="#i-info"/></svg>中继未启用（dry-run）：指令已写入 hub 并记录投递状态，但不会通过聊天源发送给 bot。启用飞书中继后即可真实送达。</p>`
+          : ''}
         ${result.error ? `<p class="console-result-meta error">${esc(result.error)}</p>` : ''}
       </div>`;
   }
@@ -2213,7 +2216,7 @@ ctxbridge serve --port 8080
     state.route = route;
     closeTopOverlay();
     setActiveNav(route.name);
-    document.body.dataset.route = route.name;
+    document.body.dataset.page = route.name;
     setPageHead(route);
     closeMobileNav();
     const token = ++state.viewToken;

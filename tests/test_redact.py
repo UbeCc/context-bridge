@@ -131,7 +131,31 @@ def _corpus() -> list[tuple[str, str, str, str]]:
             "build.corp.example.com",
             "internal_domain",
         ),
+        (
+            "internal_domain_dot_prefix",
+            "NO_PROXY=.corp.example.com curl",
+            ".corp.example.com",
+            "internal_domain",
+        ),
+        (
+            "internal_domain_subdomain",
+            "gitlab.corp.example.com",
+            "gitlab.corp.example.com",
+            "internal_domain",
+        ),
         ("internal_host", "http://svc.internal/status", "svc.internal", "internal_host"),
+        (
+            "home_path",
+            "logs in /ro" + "ot/.cache/run.log please",
+            "/ro" + "ot/.cache/run.log",
+            "home_path",
+        ),
+        (
+            "home_path_user",
+            "config /ho" + "me/deployer/.config/app.toml",
+            "/ho" + "me/deployer/.config/app.toml",
+            "home_path",
+        ),
         ("high_entropy_secret", f"blob={random_blob()}", random_blob(), "high_entropy_secret"),
     ]
 
@@ -247,6 +271,15 @@ def test_extra_patterns_and_invalid_regex() -> None:
     assert "literal [ bracket" in result.text
 
 
+def test_home_paths_are_masked_but_relative_paths_survive() -> None:
+    redactor = Redactor()
+    home = "/ro" + "ot/.dsh/sessions/--slug--/s1/session.v4.jsonl.zstd"
+    result = redactor.clean(f"transcript {home} and work/cache.txt")
+    assert home not in result.text
+    assert "home_path" in result.rules
+    assert "work/cache.txt" in result.text
+
+
 def test_full_config_wiring() -> None:
     config = parse_config(
         {
@@ -266,6 +299,9 @@ def test_full_config_wiring() -> None:
     assert result.count >= 4
     for fragment in (openai_key(), private_ip(), "corp.example.com", "internal-token-abc"):
         assert fragment not in result.text
+    # Dot-prefixed NO_PROXY entries and sub-domains are masked too.
+    tail = redactor.clean("NO_PROXY=.corp.example.com gitlab.corp.example.com")
+    assert "corp.example.com" not in tail.text
 
 
 def test_mask_placeholder_has_no_secret_shape() -> None:

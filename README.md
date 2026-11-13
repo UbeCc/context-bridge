@@ -308,6 +308,7 @@ port = 8080
 enabled = true
 mask_private_ips = true
 mask_internal_domains = ["corp.example.com"]   # your internal domains
+extra_patterns = ["dev-[0-9]{3,4}"]            # extra regexes for internal hostnames
 
 [feishu]                      # optional command relay
 enabled = false
@@ -338,6 +339,7 @@ emoji = "🟣"
 | `PATH_PREFIX`, `SERVICE_ENV` | extra PATH entries / env vars exported to the daemons |
 | `SYNC_INTERVAL`, `SESSIONS_ROOT` | collector cadence and where transcripts live |
 | `MASK_INTERNAL_DOMAINS` | extra domains to redact (comma separated) |
+| `REDACTION_EXTRA_PATTERNS` | extra redaction regexes, e.g. internal hostnames (comma separated; `,,` if a regex contains a comma) |
 | `BOTS`, `BOT_<ID>_*` | bot ids, then per-bot label/profile/state dir/colour/emoji |
 | `FEISHU_*`, `BOT_<ID>_OPEN_ID` | optional command relay configuration |
 | `SKILLS_DIR`, `SKILL_MODE` | where to install the bundled DSH skill (symlink or copy) |

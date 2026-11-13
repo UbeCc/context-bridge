@@ -127,6 +127,9 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-30}"
 SYNC_INTERVAL="${SYNC_INTERVAL:-60}"
 SESSIONS_ROOT="${SESSIONS_ROOT:-}"
 MASK_INTERNAL_DOMAINS="${MASK_INTERNAL_DOMAINS:-}"
+# Optional extra redaction regexes (comma separated; use ",," as the separator when a regex
+# itself contains a comma). They land in config.toml [redaction].extra_patterns.
+REDACTION_EXTRA_PATTERNS="${REDACTION_EXTRA_PATTERNS:-}"
 CTXBRIDGE_PY="${CTXBRIDGE_PY:-python3}"
 CTXBRIDGE_BIN="${CTXBRIDGE_BIN:-}"
 CTXBRIDGE_INSTALL="${CTXBRIDGE_INSTALL:-auto}"
@@ -282,6 +285,26 @@ config_content() {
       domains+="\"$(toml_str "$domain")\", "
     done
     printf 'mask_internal_domains = [%s]\n' "${domains%, }"
+  fi
+  if [ -n "$REDACTION_EXTRA_PATTERNS" ]; then
+    # Comma separated. A regex may itself contain a comma (e.g. "dev-\d{3,4}"); then use ",," as
+    # the pattern separator. Values are TOML-escaped, so backslashes survive the round trip.
+    local extras="" raw extra
+    raw=$REDACTION_EXTRA_PATTERNS
+    if [[ "$raw" == *",,"* ]]; then
+      raw=${raw//,,/$'\x01'}
+      IFS=$'\x01' read -r -a _extras <<< "$raw"
+    else
+      IFS=',' read -r -a _extras <<< "$raw"
+    fi
+    for extra in "${_extras[@]}"; do
+      extra=$(trim "$extra")
+      [ -n "$extra" ] || continue
+      extras+="\"$(toml_str "$extra")\", "
+    done
+    if [ -n "$extras" ]; then
+      printf 'extra_patterns = [%s]\n' "${extras%, }"
+    fi
   fi
   printf '\n'
 

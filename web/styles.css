@@ -2108,8 +2108,19 @@ pre {
 }
 
 .timeline-items {
+  position: relative;
   display: flex;
   flex-direction: column;
+}
+
+.timeline-items::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 10px;
+  bottom: 10px;
+  width: 1px;
+  background: var(--border-strong);
 }
 
 .timeline-item {
@@ -2144,24 +2155,9 @@ pre {
   padding-top: 7px;
 }
 
-.timeline-rail::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: -20px;
-  left: 50%;
-  width: 1px;
-  transform: translateX(-50%);
-  background: var(--border);
-}
-
-.timeline-day:last-child .timeline-item:last-child .timeline-rail::before {
-  display: none;
-}
-
 .timeline-dot {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -3130,6 +3126,13 @@ select.input {
 
 .console-result-meta.error {
   color: var(--bad);
+}
+
+.console-result-meta .icon {
+  width: 13px;
+  height: 13px;
+  margin-right: 4px;
+  vertical-align: -2px;
 }
 
 .console-history {
@@ -4171,5 +4174,22 @@ pre.json {
 
   .chart-bar {
     transform: none;
+  }
+}
+
+
+/* --------------------------------------------------------------------------
+   18. Chrome-only controls (declared last so they win over .icon-btn display)
+   -------------------------------------------------------------------------- */
+
+.sidebar .brand-close,
+.topbar .nav-open {
+  display: none;
+}
+
+@media (max-width: 880px) {
+  .sidebar .brand-close,
+  .topbar .nav-open {
+    display: inline-flex;
   }
 }

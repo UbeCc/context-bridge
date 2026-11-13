@@ -206,6 +206,7 @@ def test_collect_maps_ticket_trigger_decision(tmp_path: Path) -> None:
         assert record.id.startswith(f"alpha:{record.kind}:")
         assert record.source["system"] == "dsh-superagent"
         assert record.source["source_id"]
+        assert record.source["path"] == "<state-dir>/orchestrator.sqlite"
 
     open_ticket = next(r for r in by_kind["ticket"] if r.title == "open ticket")
     assert open_ticket.payload["state"] == "open"
@@ -315,6 +316,24 @@ def test_collected_text_is_redacted(tmp_path: Path) -> None:
     assert by_rule.get("openai_key", 0) >= 1
     assert by_rule.get("credential_assignment", 0) >= 1
     assert by_rule.get("private_ip", 0) >= 1
+
+
+def test_stale_cursor_version_forces_reexport(tmp_path: Path) -> None:
+    """Old cursors (from before the source-path sanitisation) must not keep stale records."""
+    config = make_config(tmp_path)
+    _write_rows(
+        Path(config.bots["alpha"].state_dir),
+        {"ticket": [ticket_value("a" * 32, "t", updated_at="2026-11-01T10:00:00.000Z")]},
+    )
+    first, cursors = superagent_collector.collect(config, {}, Redactor())
+    assert len(first) == 1
+    stale = {"superagent": {"alpha": cursors["superagent"]["alpha"]}}  # no "_version" marker
+    reexported, fixed = superagent_collector.collect(config, stale, Redactor())
+    assert len(reexported) == 1
+    assert fixed["superagent"]["_version"] == superagent_collector.CURSOR_VERSION
+    # The refreshed cursor is incremental again.
+    again, _ = superagent_collector.collect(config, fixed, Redactor())
+    assert again == []
 
 
 def test_missing_state_dir_is_skipped(tmp_path: Path) -> None:
@@ -455,6 +474,14 @@ def test_sessions_digest_and_attribution(tmp_path: Path) -> None:
     assert alpha.payload["turns"] == 1
     assert alpha.payload["model"]["model"] == "test-model"
     assert alpha.payload["ended_reason"] == "completed"
+    assert alpha.source["path"] == "<sessions-root>/--state-a--/s1/session.v4.jsonl.zstd"
+    assert alpha.payload["cwd"] == "<bot-state>/work/ticket-1"
+    # No absolute host path may leak from session provenance into the hub.
+    import json as _json
+
+    dumped = _json.dumps([record.to_dict() for record in records], ensure_ascii=False)
+    for leaked in (str(state_a), str(state_b), str(sessions_root), str(tmp_path)):
+        assert leaked not in dumped, f"host path leaked into session record: {leaked}"
     assert by_bot["beta"].title == "Beta work"
     assert "sessions" in cursors
 
@@ -503,6 +530,24 @@ def test_sessions_window(tmp_path: Path) -> None:
     records, _ = session_collector.collect(config, cursors, Redactor(), window_days=365)
     assert len(records) == 1
     assert records[0].payload["session_id"] == "old"
+
+
+def test_sessions_stale_cursor_version_redigests(tmp_path: Path) -> None:
+    binary = _zstd()
+    sessions_root = tmp_path / "sessions"
+    config = make_config(tmp_path, sessions_root=str(sessions_root))
+    state_a = Path(config.bots["alpha"].state_dir)
+    compress_jsonl(
+        binary,
+        sessions_root / "--state-a--" / "s1" / "session.v4.jsonl.zstd",
+        session_lines(str(state_a) + "/work/t", session_id="s1"),
+    )
+    first, cursors = session_collector.collect(config, {}, Redactor())
+    assert len(first) == 1
+    stale = {"sessions": {"v": 1, "files": cursors["sessions"]["files"]}}
+    redigested, fixed = session_collector.collect(config, stale, Redactor())
+    assert len(redigested) == 1
+    assert fixed["sessions"]["v"] == session_collector.CURSOR_VERSION
 
 
 def test_sessions_tolerates_corrupt_and_headerless_streams(tmp_path: Path) -> None:

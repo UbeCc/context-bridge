@@ -48,6 +48,10 @@ MIN_SQLITE_VERSION = (3, 38)
 #: Tables exported as records, in collection order.
 EXPORTED_TABLES = ("ticket", "trigger", "decision")
 
+#: Bump when record shaping changes in a way that must rewrite already-exported records
+#: (e.g. removing absolute host paths from ``Record.source``). Old cursors are then ignored.
+CURSOR_VERSION = 2
+
 _TITLE_MAX = 300
 _SUMMARY_MAX = 2000
 _REASON_MAX = 600
@@ -228,10 +232,11 @@ def _make_record(
 
 
 def _source(bot_spec: BotSpec, db_path: Path, kind: str, source_id: str) -> dict[str, Any]:
+    # Never persist absolute host paths in the hub: keep a generic provenance marker instead.
     return {
         "system": "dsh-superagent",
         "profile": bot_spec.profile,
-        "path": str(db_path),
+        "path": f"<state-dir>/{ORCHESTRATOR_DB}",
         "source_id": source_id,
         "table": kind,
     }
@@ -466,8 +471,10 @@ def collect(config: Any, cursors: dict, redactor: Redactor) -> tuple[list[Record
     """
     new_cursors = copy.deepcopy(cursors or {})
     state = new_cursors.setdefault("superagent", {})
-    if not isinstance(state, dict):
-        state = {}
+    if not isinstance(state, dict) or state.get("_version") != CURSOR_VERSION:
+        # Unknown/old cursor layout: do one full re-export so stored records match the current
+        # redaction and provenance rules.
+        state = {"_version": CURSOR_VERSION}
         new_cursors["superagent"] = state
     records: list[Record] = []
     for bot_id, bot_spec in sorted(config.bots.items()):

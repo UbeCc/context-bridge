@@ -63,6 +63,9 @@ _REQUEST_MAX = 900
 _OUTCOME_MAX = 1500
 _DIGEST_TOOL_NAMES = 10
 
+#: Bump to re-digest every transcript (e.g. after changing record source/provenance shaping).
+CURSOR_VERSION = 2
+
 
 class ZstdMissingError(RuntimeError):
     """The zstd command-line decoder cannot be found."""
@@ -252,12 +255,36 @@ def _parse_events(data: bytes) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return header or {}, events
 
 
+def _generic_bot_path(cwd: Any, state_dir: str) -> str | None:
+    """Describe a session cwd relative to the bot state dir without leaking host paths."""
+    raw = str(cwd or "")
+    if not raw:
+        return None
+    canonical_cwd = _canonical_path(raw)
+    canonical_state = _canonical_path(state_dir)
+    if canonical_state and canonical_cwd == canonical_state:
+        return "<bot-state>"
+    if canonical_state and canonical_cwd.startswith(canonical_state + "/"):
+        return "<bot-state>/" + canonical_cwd[len(canonical_state) + 1 :]
+    return "<cwd>"
+
+
+def _generic_source_path(path: Path, sessions_root: Path) -> str:
+    """``<sessions-root>/--slug--/<session-id>/session.v4.jsonl.zstd`` (relative, no host path)."""
+    try:
+        relative = path.relative_to(sessions_root)
+    except ValueError:
+        relative = Path(path.name)
+    return "<sessions-root>/" + relative.as_posix()
+
+
 def _session_record(
     redactor: Redactor,
     bot_spec: BotSpec,
     path: Path,
     header: dict[str, Any],
     events: list[dict[str, Any]],
+    sessions_root: Path,
 ) -> Record | None:
     session_id = str(header.get("id") or path.parent.name)
     title = ""
@@ -330,7 +357,7 @@ def _session_record(
     updated_at = _iso_from_stat(path)
     payload = {
         "session_id": session_id,
-        "cwd": header.get("cwd"),
+        "cwd": _generic_bot_path(header.get("cwd"), bot_spec.state_dir),
         "preset": preset or None,
         "model": model or None,
         "turns": turns,
@@ -345,10 +372,11 @@ def _session_record(
     title_clean, n_title = title_result.text, title_result.count
     summary_clean, n_summary = summary_result.text, summary_result.count
     payload_clean, n_payload = redactor.clean_obj(payload)
+    # No absolute host paths in the hub: the generic marker replaces the sessions root.
     source = {
         "system": "dsh-sessions",
         "profile": bot_spec.profile,
-        "path": str(path),
+        "path": _generic_source_path(path, sessions_root),
         "source_id": session_id,
         "v": 4,
     }
@@ -393,8 +421,12 @@ def collect(
     bots: dict[str, BotSpec] = dict(config.bots or {})
     signature = _config_signature(bots)
     state = new_cursors.get("sessions")
-    if not isinstance(state, dict) or state.get("config") != signature:
-        state = {"v": 1, "config": signature, "window": None, "files": {}}
+    if (
+        not isinstance(state, dict)
+        or state.get("config") != signature
+        or state.get("v") != CURSOR_VERSION
+    ):
+        state = {"v": CURSOR_VERSION, "config": signature, "window": None, "files": {}}
         new_cursors["sessions"] = state
     files_cache = state.setdefault("files", {})
     if not isinstance(files_cache, dict):
@@ -474,7 +506,9 @@ def collect(
                     files_cache[key] = entry
                     continue
                 try:
-                    record = _session_record(redactor, bots[bot_id], path, header, events)
+                    record = _session_record(
+                        redactor, bots[bot_id], path, header, events, root
+                    )
                 except Exception as exc:  # a single weird transcript must not break a sync
                     LOG.warning("sessions collector: cannot digest %s: %s", path, exc)
                     entry["error"] = "digest"
